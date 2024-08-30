@@ -12,8 +12,8 @@ libdir=${prefix}/@INSTALL_LIBDIR@/@SUFFIX_INSTALL_DIR@
 
 Name: libmariadbcpp
 Version: @PRODUCT_VERSION@ 
-Description: MariaDB Connector/C++ dynamic library
-Requires.private: libmariadb == @MARIADB_CONNECTOR_C_VERSION@
+Description: MariaDB Connector/C++ library
+Requires.private: libmariadb = @MARIADB_CONNECTOR_C_VERSION@
 Cflags: -I${includedir}
 Libs: -L${libdir} -lmariadbcpp
 Libs.private: @extra_dynamic_LDFLAGS@

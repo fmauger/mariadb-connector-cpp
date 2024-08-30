@@ -1,5 +1,6 @@
 
 IF(USE_UNIX_SPECIAL_LIBMARIADBCONC)
+  MESSAGE (STATUS "PRODUCT_VERSION = ${PRODUCT_VERSION}")
   # Support for pkg-config script:
   CONFIGURE_FILE(${CMAKE_CURRENT_SOURCE_DIR}/libmariadbcpp.pc.in
     ${CMAKE_CURRENT_BINARY_DIR}/libmariadbcpp.pc @ONLY)
