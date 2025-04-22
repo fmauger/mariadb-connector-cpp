@@ -1,5 +1,5 @@
 /************************************************************************************
-   Copyright (C) 2020,2024 MariaDB Corporation plc
+   Copyright (C) 2020,2025 MariaDB Corporation plc
 
    This library is free software; you can redistribute it and/or
    modify it under the terms of the GNU Library General Public
@@ -167,7 +167,7 @@ namespace capi
   }
 
 
-  std::size_t estimatePreparedQuerySize(ClientPrepareResult* clientPrepareResult, const std::vector<SQLString> &queryPart,
+  std::size_t estimatePreparedQuerySize(ClientPrepareResult* clientPrepareResult, const std::vector<std::string> &queryPart,
       std::vector<Unique::ParameterHolder>& parameters)
   {
     std::size_t estimate= queryPart.front().length() + 1/* for \0 */, offset = 0;
@@ -191,7 +191,7 @@ namespace capi
   {
     addQueryTimeout(out, queryTimeout);
 
-    const std::vector<SQLString> &queryPart= clientPrepareResult->getQueryParts();
+    auto &queryPart= clientPrepareResult->getQueryParts();
     std::size_t estimate= estimatePreparedQuerySize(clientPrepareResult, queryPart, parameters);
 
     if (estimate > StringImp::get(out).capacity() - out.length()) {
@@ -241,8 +241,8 @@ namespace capi
       addQueryTimeout(sql, queryTimeout);
       if (clientPrepareResult->getParamCount() == 0
         && !clientPrepareResult->isQueryMultiValuesRewritable()) {
-        if (clientPrepareResult->getQueryParts().size() == 1) {
-          sql.append(clientPrepareResult->getQueryParts().front());
+        if (clientPrepareResult->getQueryParts().size() == 0) {
+          sql.append(clientPrepareResult->getSql());
           realQuery(sql);
         }
         else {
@@ -280,8 +280,9 @@ namespace capi
    * @throws SQLException exception
    */
   bool QueryProtocol::executeBatchClient(
-      bool /*mustExecuteOnMaster*/,
+      bool mustExecuteOnMaster,
       Results* results,
+
       ClientPrepareResult* prepareResult,
       std::vector<std::vector<Unique::ParameterHolder>>& parametersList,
       bool hasLongData)
@@ -329,12 +330,14 @@ namespace capi
       return true;
     }
 
-    if (options->useBatchMultiSend) {
+    if (options->continueBatchOnError) {//options->useBatchMultiSend) {
       executeBatchMulti(results, prepareResult, parametersList);
       return true;
     }
 
-    return false;
+    executeBatchSlow(mustExecuteOnMaster, results, prepareResult, parametersList);
+
+    return true;
   }
 
   /**
@@ -364,7 +367,6 @@ namespace capi
     if ((serverCapabilities & MariaDbServerCapabilities::_MARIADB_CLIENT_STMT_BULK_OPERATIONS) == 0)
       return false;
 
-    SQLString sql(origSql);
     // ensure that type doesn't change
     std::vector<Unique::ParameterHolder> &initParameters= parametersList.front();
     std::size_t parameterCount= initParameters.size();
@@ -395,7 +397,7 @@ namespace capi
     }
 
     // any select query is not applicable to bulk
-    if (Utils::findstrni(StringImp::get(sql), "select", 6) != std::string::npos) {
+    if (Utils::findstrni(StringImp::get(origSql), "select", 6) != std::string::npos) {
       return false;
     }
 
@@ -410,7 +412,7 @@ namespace capi
       // send PREPARE if needed
       // **************************************************************************************
       if (!tmpServerPrepareResult){
-        tmpServerPrepareResult= prepareInternal(sql, true);
+        tmpServerPrepareResult= prepareInternal(origSql, true);
       }
 
       capi::MYSQL_STMT* statementId= tmpServerPrepareResult ? tmpServerPrepareResult->getStatementId() : nullptr;
@@ -434,6 +436,12 @@ namespace capi
         getResult(results, tmpServerPrepareResult);
       }
       catch (SQLException& sqle) {
+        if (!serverPrepareResult && tmpServerPrepareResult) {
+          releasePrepareStatement(tmpServerPrepareResult);
+          // releasePrepareStatement basically cares only about releasing stmt on server(and C API handle)
+          delete tmpServerPrepareResult;
+          tmpServerPrepareResult= nullptr;
+        }
         if (sqle.getSQLState().compare("HY000") == 0 && sqle.getErrorCode()==1295){
           // query contain commands that cannot be handled by BULK protocol
           // clear error and special error code, so it won't leak anywhere
@@ -442,16 +450,13 @@ namespace capi
           return false;
         }
         if (exception.getMessage().empty()) {
-          exception= logQuery->exceptionWithQuery(sql, sqle, explicitClosed);
+          exception= logQuery->exceptionWithQuery(origSql, sqle, explicitClosed);
           if (!options->continueBatchOnError){
             throw exception;
           }
         }
       }
 
-      if (!exception.getMessage().empty()) {
-        throw exception;
-      }
       results->setRewritten(true);
       
       if (!serverPrepareResult && tmpServerPrepareResult) {
@@ -459,8 +464,11 @@ namespace capi
         // releasePrepareStatement basically cares only about releasing stmt on server(and C API handle)
         delete tmpServerPrepareResult;
       }
+      
+      if (!exception.getMessage().empty()) {
+        throw exception;
+      }
       return true;
-
     }
     catch (std::runtime_error& e) {
       if (!serverPrepareResult && tmpServerPrepareResult) {
@@ -473,6 +481,7 @@ namespace capi
     //To please compilers etc
     return false;
   }
+
 
   void QueryProtocol::initializeBatchReader()
   {
@@ -498,17 +507,90 @@ namespace capi
     initializeBatchReader();
 
     SQLString sql;
+    bool autoCommit= getAutocommit();
+
+    if (autoCommit) {
+      SEND_CONST_QUERY("SET AUTOCOMMIT=0");
+    }
 
     for (auto& parameters : parametersList)
     {
       sql.clear();
 
       assemblePreparedQueryForExec(sql, clientPrepareResult, parameters, -1);
-      realQuery(sql);
+      sendQuery(sql);
+    }
+    if (autoCommit) {
+
+      // Sending commit, restoring autocommit
+      SEND_CONST_QUERY("COMMIT");
+      SEND_CONST_QUERY("SET AUTOCOMMIT=1");
+      // Getting result for setting autocommit off - we don't need it
+      readQueryResult();
+    }
+    for (std::size_t i= 0; i < parametersList.size(); ++i) {
+      // We don't need exception on error here
+      capi::mysql_read_query_result(connection.get());
       getResult(results);
+    }
+    if (autoCommit) {
+      // Getting result for commit and setting autocommit back on to clear the connection,
+      // reading new server status(with auto-commit)
+      commitReturnAutocommit(true);
     }
   }
 
+  /**
+   * Execute clientPrepareQuery batch.
+   *
+   * @param results results
+   * @param clientPrepareResult ClientPrepareResult
+   * @param parametersList List of parameters
+   * @throws SQLException exception
+   */
+  void QueryProtocol::executeBatchSlow(
+    bool mustExecuteOnMaster,
+    Results* results,
+    ClientPrepareResult* clientPrepareResult,
+    std::vector<std::vector<Unique::ParameterHolder>>& parametersList)
+  {
+    cmdPrologue();
+    // send query one by one, reading results for each query before sending another one
+    SQLException exception("");
+    bool autoCommit= getAutocommit();
+
+    if (autoCommit) {
+      CONST_QUERY("SET AUTOCOMMIT=0");
+    }
+    //protocol->executeQuery("LOCK TABLE <parse query for table name> WRITE")
+    for (auto& it : parametersList) {
+      try {
+        stopIfInterrupted();
+        executeQuery(true, results, clientPrepareResult, it);
+      }
+      catch (SQLException& e) {
+        if (options->continueBatchOnError) {
+          exception= e;
+        }
+        else {
+          if (autoCommit) {
+            // If we had autocommit on, we have to commit everything up to the point. Otherwise that's up to the application
+            commitReturnAutocommit();
+          }
+          throw e;
+        }
+      }
+    }
+    if (autoCommit) {
+      // If we had autocommit on, we have to commit everything up to the point. Otherwise that's up to the application
+      commitReturnAutocommit();
+    }
+    /* We creating default exception w/out message.
+       Using that to test if we caught an exception during the execution */
+    if (*exception.getMessage() != '\0') {
+      throw exception;
+    }
+  }
   /**
    * Execute batch from Statement.executeBatch().
    *
@@ -525,7 +607,7 @@ namespace capi
       // check that queries are rewritable
       bool canAggregateSemiColumn= true;
       std::size_t totalLen= 0;
-      for (SQLString query : queries){
+      for (auto& query : queries){
         if (!ClientPrepareResult::canAggregateSemiColon(query,noBackslashEscapes())){
           canAggregateSemiColumn= false;
           break;
@@ -540,12 +622,13 @@ namespace capi
 
       if (canAggregateSemiColumn) {
         executeBatchAggregateSemiColon(results, queries, totalLen);
-      }else {
-        executeBatch(results,queries);
+      }
+      else {
+        executeBatch(results, queries);
       }
 
     }else {
-      executeBatch(results,queries);
+      executeBatch(results, queries);
     }
   }
 
@@ -558,45 +641,60 @@ namespace capi
    */
   void QueryProtocol::executeBatch(Results* results, const std::vector<SQLString>& queries)
   {
-    if (!options->useBatchMultiSend){
-
-      MariaDBExceptionThrower exception;
-
+    bool autoCommit= getAutocommit();
+    
+    if (!options->continueBatchOnError) { //!options->useBatchMultiSend
+      if (autoCommit) {
+        CONST_QUERY("SET AUTOCOMMIT=0");
+      }
       for (auto& sql : queries) {
         try {
+          stopIfInterrupted();
           realQuery(sql);
           getResult(results);
-
-        }catch (SQLException& sqlException){
-          if (!exception){
-            SQLException ex(logQuery->exceptionWithQuery(sql, sqlException, explicitClosed));
-            exception.take(ex);
-            if (!options->continueBatchOnError){
-              exception.Throw();
-            }
+        }
+        catch (SQLException& sqlException) {
+          SQLException ex(logQuery->exceptionWithQuery(sql, sqlException, explicitClosed));
+          if (autoCommit) {
+            commitReturnAutocommit();
           }
-        }catch (std::runtime_error& e){
-          if (!exception){
-            exception.assign(handleIoException(e, false));
-            if (!options->continueBatchOnError){
-              exception.Throw();
-            }
+          throw ex;
+        }
+        catch (std::runtime_error& e) {
+          if (autoCommit) {
+            commitReturnAutocommit();
           }
+          handleIoException(e, false).Throw();
         }
       }
-      stopIfInterrupted();
-
-      if (exception){
-        exception.Throw();
+      if (autoCommit) {
+        commitReturnAutocommit();
       }
       return;
     }
-    initializeBatchReader();
 
-    for (auto& query : queries)
-    {
-      realQuery(query);
+    MariaDBExceptionThrower exception;
+    initializeBatchReader();
+    if (autoCommit) {
+      SEND_CONST_QUERY("SET AUTOCOMMIT=0");
+    }
+    for (auto& query : queries) {
+      sendQuery(query);
+    }
+    if (autoCommit) {
+      // Sending commit, restoring autocommit
+      SEND_CONST_QUERY("COMMIT");
+      SEND_CONST_QUERY("SET AUTOCOMMIT=1");
+      //Reading result of setting autocommit off
+      readQueryResult();
+    }
+    for (auto& query : queries) {
+      //we don't need exception in case of error, thus calling capi directly
+      capi::mysql_read_query_result(connection.get());
       getResult(results);
+    }
+    if (autoCommit) {
+      commitReturnAutocommit(true);
     }
   }
 
@@ -746,7 +844,7 @@ namespace capi
   * @throws IOException if connection fail
   */
   std::size_t rewriteQuery(SQLString& pos,
-    const std::vector<SQLString> &queryParts,
+    const std::vector<std::string> &queryParts,
     std::size_t currentIndex,
     std::size_t paramCount,
     std::vector<std::vector<Unique::ParameterHolder>>& parameterList,
@@ -989,7 +1087,6 @@ namespace capi
       Results* results,
       std::vector<Unique::ParameterHolder>& parameters)
   {
-
     cmdPrologue();
 
     try {
@@ -1017,10 +1114,15 @@ namespace capi
       }
       /*CURSOR_TYPE_NO_CURSOR);*/
       getResult(results, serverPrepareResult);
-
-    }catch (SQLException& qex){
+      // We have to do this due to CONCPP-138, but only when we are not streaming
+      if (results->getFetchSize() == 0) {
+        results->loadFully(false, this);
+      }
+    }
+    catch (SQLException& qex) {
       throw logQuery->exceptionWithQuery(parameters, qex, serverPrepareResult);
-    }catch (std::runtime_error& e){
+    }
+    catch (std::runtime_error& e) {
       handleIoException(e).Throw();
     }
   }
@@ -1822,11 +1924,12 @@ namespace capi
     MaxAllowedPacketException* maxAllowedPacketEx= dynamic_cast<MaxAllowedPacketException*>(&initialException);
     MariaDBExceptionThrower result;
 
-    if (maxAllowedPacketEx != nullptr){
+    if (maxAllowedPacketEx != nullptr) {
       maxSizeError= true;
-      if (maxAllowedPacketEx->isMustReconnect()){
+      if (maxAllowedPacketEx->isMustReconnect()) {
         mustReconnect= true;
-      }else {
+      }
+      else {
         SQLNonTransientConnectionException ex(
           initialException.what() + getTraces(),
           UNDEFINED_SQLSTATE.getSqlState(), 0,
@@ -1839,14 +1942,15 @@ namespace capi
           return result;
         }
       }
-    }else {
+    }
+    else {
       maxSizeError= false;// writer.exceedMaxLength();
       if (maxSizeError){
         mustReconnect= true;
       }
     }
 
-    if (mustReconnect && !explicitClosed){
+    if (mustReconnect && !explicitClosed) {
       try {
         connect();
 
@@ -1854,7 +1958,7 @@ namespace capi
           resetStateAfterFailover(
               getMaxRows(), getTransactionIsolationLevel(), getDatabase(), getAutocommit());
 
-          if (maxSizeError){
+          if (maxSizeError) {
             SQLTransientConnectionException ex(
                 "Could not send query: query size is >= to max_allowed_packet ("
                 +/*writer.getMaxAllowedPacket()*/std::to_string(MAX_PACKET_LENGTH)
@@ -1883,7 +1987,8 @@ namespace capi
             return result;
           }
 
-        }catch (SQLException& /*queryException*/){
+        }
+        catch (SQLException& /*queryException*/) {
           SQLNonTransientConnectionException ex(
               "reconnection succeed, but resetting previous state failed",
               UNDEFINED_SQLSTATE.getSqlState()+getTraces(), 0,
@@ -1897,7 +2002,8 @@ namespace capi
           }
         }
 
-      }catch (SQLException& /*queryException*/){
+      }
+      catch (SQLException& /*queryException*/) {
         connected= false;
         SQLNonTransientConnectionException ex(
             SQLString(initialException.what()).append("\nError during reconnection").append(getTraces()),

@@ -1,6 +1,6 @@
 /*
  * Copyright (c) 2009, 2018, Oracle and/or its affiliates. All rights reserved.
- *               2020, 2024 MariaDB Corporation plc
+ *               2020, 2025 MariaDB Corporation plc
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License, version 2.0, as
@@ -78,7 +78,10 @@ public:
     TEST_CASE(concpp106_batchBulk);
     TEST_CASE(psCache);
     TEST_CASE(concpp116_getByte);
-    TEST_CASE(multirs_caching);
+    TEST_CASE(multirsCaching);
+    TEST_CASE(moreResultsAfterPrepare);
+    TEST_CASE(bytesArrParam);
+    TEST_CASE(concpp138_useRsAfterConClose);
   }
 
   /**
@@ -175,7 +178,17 @@ public:
 
   void concpp116_getByte();
 
+  void multirsCaching();
+
+  void moreResultsAfterPrepare();
+
   void multirs_caching();
+  /**
+   * sql::bytes may have negative length(internally) and that caused problems
+   */
+  void bytesArrParam();
+
+  void concpp138_useRsAfterConClose();
 
   /* unit_fixture methods overriding */
   void setUp();

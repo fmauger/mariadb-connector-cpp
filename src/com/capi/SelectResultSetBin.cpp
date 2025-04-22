@@ -530,7 +530,10 @@ namespace capi
     if (position <= 0 || position > columnInformationLength) {
       throw IllegalArgumentException("No such column: " + std::to_string(position), "22023");
     }
-
+    // Possibly this is not the right place for this
+    if (streaming && this->statement->isClosed()) {
+      throw SQLException("Operation not permit on a closed resultset. Resultset is closed because statement or connection has been closed", "HY000");
+    }
     if (lastRowPointer != rowPointer) {
       resetRow();
     }
@@ -1950,7 +1953,6 @@ namespace capi
       for (auto& colInfo : columnsInformation) {
         colInfo->makeLocalCopy();
       }
-      columnNameMap->changeColumnInfo(columnsInformation);
       rowPointer= preservedPosition;
     }
   // else it is already cached in case of Text protocol

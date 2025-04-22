@@ -1,5 +1,5 @@
 /************************************************************************************
-   Copyright (C) 2020,2023 MariaDB Corporation AB
+   Copyright (C) 2020,2025 MariaDB Corporation plc
 
    This library is free software; you can redistribute it and/or
    modify it under the terms of the GNU Library General Public
@@ -32,13 +32,14 @@
 #include "util/Utils.h"
 #include "util/LogQueryTool.h"
 
+
 namespace sql
 {
 namespace mariadb
 {
 namespace capi
 {
-  static const char OptionSelected= 1, OptionNotSelected= 0;
+  static const char OptionSelected= '\1', OptionNotSelected= '\0';
   static const unsigned int uintOptionSelected= 1, uintOptionNotSelected= 0;
   const char * attrPairSeparators= ",";
 
@@ -177,7 +178,7 @@ namespace capi
     }
 
     if (options->useCompression){
-      if ((serverCapabilities &MariaDbServerCapabilities::COMPRESS)==0){
+      if ((serverCapabilities & MariaDbServerCapabilities::COMPRESS)==0){
 
         options->useCompression= false;
       }else {
@@ -253,15 +254,16 @@ namespace capi
   /** Closes socket and stream readers/writers Attempts graceful shutdown. */
   void ConnectProtocol::close()
   {
-    std::unique_lock<std::mutex> localScopeLock(lock);
     this->connected= false;
     try {
       // skip acquires lock
-      localScopeLock.unlock();
       skip();
-    }catch (std::runtime_error& ){
     }
-    localScopeLock.lock();
+    catch (std::runtime_error& ) {
+    }
+    std::unique_lock<std::mutex> localScopeLock(lock);
+    // We still can statements waiting to be closed
+    forceReleaseWaitingPrepareStatement();
     closeSocket();
     cleanMemory();
   }
@@ -551,7 +553,6 @@ namespace capi
       mysql_optionsv(connection.get(), MARIADB_OPT_TLS_PEER_FP, options->tlsPeerFP.c_str());
     }
 
-
     // This is not quite a TLS option, but still putting it here
     if (!options->serverRsaPublicKeyFile.empty()) {
       mysql_optionsv(connection.get(), MYSQL_SERVER_PUBLIC_KEY, (void*)options->serverRsaPublicKeyFile.c_str());
@@ -560,7 +561,10 @@ namespace capi
     //sslSocket->startHandshake();
 
     if (!options->disableSslHostnameVerification && !options->trustServerCertificate) {
-      mysql_optionsv(connection.get(), MYSQL_OPT_SSL_VERIFY_SERVER_CERT, (const char*)&safeCApiTrue);
+      mysql_optionsv(connection.get(), MYSQL_OPT_SSL_VERIFY_SERVER_CERT, (const char*)&OptionSelected);
+    }
+    else {
+      mysql_optionsv(connection.get(), MYSQL_OPT_SSL_VERIFY_SERVER_CERT, (const char*)&OptionNotSelected);
     }
 
     assignStream(options);
@@ -743,15 +747,15 @@ namespace capi
 
     results->commandEnd();
     ResultSet* resultSet= results->getResultSet();
-    if (resultSet){
+    if (resultSet) {
       resultSet->next();
 
       serverData.emplace("max_allowed_packet",resultSet->getString(1));
       serverData.emplace("system_time_zone",resultSet->getString(2));
       serverData.emplace("time_zone",resultSet->getString(3));
       serverData.emplace("auto_increment_increment", resultSet->getString(4));
-
-    }else {
+    }
+    else {
       throw SQLException(mysql_get_socket(connection.get()) == MARIADB_INVALID_SOCKET ?
         "Error reading SessionVariables results. Socket is NOT connected" :
         "Error reading SessionVariables results. Socket IS connected");
@@ -772,14 +776,13 @@ namespace capi
 
   void ConnectProtocol::readPipelineAdditionalData(std::map<SQLString, SQLString>& serverData)
   {
-
     MariaDBExceptionThrower resultingException;
 
     try {
       Unique::Results res(new Results());
       getResult(res.get());
-    }catch (SQLException& sqlException){
-
+    }
+    catch (SQLException& sqlException) {
       resultingException.take(sqlException);
     }
 
@@ -787,8 +790,9 @@ namespace capi
 
     try {
       readRequestSessionVariables(serverData);
-    }catch (SQLException& sqlException){
-      if (!resultingException){
+    }
+    catch (SQLException& sqlException) {
+      if (!resultingException) {
         resultingException.assign(exceptionFactory->create("could not load system variables", "08000", &sqlException));
         canTrySessionWithShow= true;
       }
@@ -796,16 +800,16 @@ namespace capi
 
     try {
       readPipelineCheckMaster();
-    }catch (SQLException& sqlException){
+    }
+    catch (SQLException& sqlException) {
       canTrySessionWithShow= false;
-      if (!resultingException){
+      if (!resultingException) {
         exceptionFactory->create(
             "could not identified if server is master", "08000", &sqlException).Throw();
       }
     }
 
-    if (canTrySessionWithShow){
-
+    if (canTrySessionWithShow) {
       requestSessionDataWithShow(serverData);
       connected= true;
       return;
@@ -867,7 +871,7 @@ namespace capi
     sendPipelineCheckMaster();
     readPipelineCheckMaster();
 
-    if (options->createDatabaseIfNotExist && !database.empty()){
+    if (options->createDatabaseIfNotExist && !database.empty()) {
 
       SQLString quotedDb(MariaDbConnection::quoteIdentifier(this->database));
       sendCreateDatabaseIfNotExist(quotedDb);
@@ -893,7 +897,6 @@ namespace capi
 
   void ConnectProtocol::loadCalendar(const SQLString& /*srvTimeZone*/, const SQLString& /*srvSystemTimeZone*/)
   {
-
     timeZone= nullptr;// Calendar.getInstance().getTimeZone();
 
 #ifdef WE_HAVE_NEED_TIMEZONE
@@ -1426,6 +1429,8 @@ namespace capi
     return "";
   }
 
+  /* Unsynced execution of a query. Indtended for internal purposes.
+     Process error and throws execution with error info */
   void ConnectProtocol::realQuery(const SQLString& sql)
   {
     if (capi::mysql_real_query(connection.get(), sql.c_str(), static_cast<unsigned long>(sql.length()))) {
@@ -1434,6 +1439,57 @@ namespace capi
     }
   }
 
+  void ConnectProtocol::commitReturnAutocommit(bool justReadMultiSendResults)
+  {
+    if (justReadMultiSendResults) {
+      readQueryResult();//COMMIT
+      readQueryResult();//SET AUTOCOMMIT=1
+    }
+    else {
+      CONST_QUERY("COMMIT");
+      CONST_QUERY("SET AUTOCOMMIT=1");
+    }
+    // Need to get autocommit returned to the stored serverstatus
+    capi::mariadb_get_infov(connection.get(), MARIADB_CONNECTION_SERVER_STATUS, (void*)&this->serverStatus);
+  }
+
+  void ConnectProtocol::sendQuery(const SQLString & sql)
+  {
+    if (capi::mysql_send_query(connection.get(), sql.c_str(), static_cast<unsigned long>(sql.length()))) {
+      throw SQLException(capi::mysql_error(connection.get()), capi::mysql_sqlstate(connection.get()),
+        capi::mysql_errno(connection.get()));
+    }
+  }
+
+
+  void ConnectProtocol::sendQuery(const char * sql, std::size_t length)
+  {
+    if (capi::mysql_send_query(connection.get(), sql, static_cast<unsigned long>(length))) {
+      throw SQLException(capi::mysql_error(connection.get()), capi::mysql_sqlstate(connection.get()),
+        capi::mysql_errno(connection.get()));
+    }
+  }
+
+
+  void ConnectProtocol::readQueryResult()
+  {
+    if (capi::mysql_read_query_result(connection.get())) {
+      throw SQLException(capi::mysql_error(connection.get()), capi::mysql_sqlstate(connection.get()),
+        capi::mysql_errno(connection.get()));
+    }
+  }
+
+  /* Unsynced execution of a query. Indtended for internal purposes.
+     Process error and throws execution with error info. There is no sense to create SQLString
+     object if we have const char literal */
+  void ConnectProtocol::realQuery(const char* sql, std::size_t len)
+  {
+    auto con= connection.get();
+    if (capi::mysql_real_query(con, sql, static_cast<unsigned long>(len))) {
+      throw SQLException(capi::mysql_error(con), capi::mysql_sqlstate(con),
+                        capi::mysql_errno(con));
+    }
+  }
   void ConnectProtocol::reconnect()
   {
     std::lock_guard<std::mutex> localScopeLock(lock);

@@ -26,10 +26,11 @@
 
 #include "lru/pscache.h"
 #include "Consts.h"
-
 #include "Protocol.h"
-
 #include "pool/GlobalStateInfo.h"
+
+#define CONST_QUERY(QUERY_STRING_LITERAL) realQuery(QUERY_STRING_LITERAL,sizeof(QUERY_STRING_LITERAL))
+#define SEND_CONST_QUERY(QUERY_STRING_LITERAL) sendQuery(QUERY_STRING_LITERAL,sizeof(QUERY_STRING_LITERAL))
 
 namespace sql
 {
@@ -79,7 +80,7 @@ namespace capi
 
     bool readOnly= false;
     FailoverProxy* proxy= nullptr;
-    volatile bool connected= false;
+    std::atomic<bool> connected{false};
     bool explicitClosed= false;
     SQLString database;
     int64_t serverThreadId= 0;
@@ -110,6 +111,13 @@ namespace capi
 
   protected:
     void realQuery(const SQLString& sql);
+    void commitReturnAutocommit(bool justReadMultiSendResults=false);
+    void sendQuery(const SQLString& sql);
+    void sendQuery(const char* query, std::size_t length);
+    //mysql_read_result
+    void readQueryResult();
+    void realQuery(const char* query, std::size_t length);
+
   public:
     void close();
     void abort();

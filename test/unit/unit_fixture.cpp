@@ -1,6 +1,6 @@
 /*
  * Copyright (c) 2008, 2018, Oracle and/or its affiliates. All rights reserved.
- *               2020, 2023 MariaDB Corporation AB
+ *               2020, 2025 MariaDB Corporation plc
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License, version 2.0, as
@@ -340,7 +340,7 @@ void unit_fixture::setUp()
     }
     catch (sql::SQLException& sqle)
     {
-      logErr(String("Couldn't get connection") + sqle.what());
+      logErr(String("Couldn't get connection: ") + sqle.what());
       logDebug("Host:" + url + ", UID:" + user + ", Schema:" + db + ", Tls:" + (useTls ? "yes" : "no")/* + ", Pwd:" + passwd + "<<<"*/);
       for (auto& cit : commonProperties) {
         String property(cit.first.c_str());
@@ -558,19 +558,15 @@ void unit_fixture::checkResultSetScrolling(ResultSet &res_ref)
     return;
   }
 
-  int before;
-
-  before=static_cast<int> (res_ref->getRow());
+  auto before= res_ref->getRow();
   if (!res_ref->last())
   {
     res_ref->absolute(before);
     return;
   }
 
-  int num_rows;
+  auto num_rows= res_ref->getRow();
   int i;
-
-  num_rows=(int) res_ref->getRow();
 
   res_ref->beforeFirst();
 
@@ -751,7 +747,15 @@ bool unit_fixture::isSkySqlHA() const
 
 bool unit_fixture::isMaxScale() const
 {
-  static bool MaxScaleOnTravis= std::getenv("srv") != nullptr && strcmp(std::getenv("srv"), "maxscale") == 0;
+  static bool MaxScaleOnTravis= (std::getenv("MAXSCALE_TEST_DISABLE") != nullptr ||
+    (std::getenv("srv") != nullptr && strcmp(std::getenv("srv"), "maxscale") == 0));
   return MaxScaleOnTravis;
+}
+
+bool unit_fixture::isMySQL() const
+{
+  static DatabaseMetaData dbmeta(con->getMetaData());
+  static bool MySQL= dbmeta->getDatabaseProductName().compare("MariaDB");
+  return MySQL;
 }
 } /* namespace testsuite */

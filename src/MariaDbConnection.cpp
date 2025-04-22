@@ -461,7 +461,8 @@ namespace mariadb
   {
     if (!sql.empty())
     {
-      SQLString sqlQuery(Utils::nativeSql(sql, protocol.get()));
+      SQLString buffer;
+      const SQLString& sqlQuery= Utils::nativeSql(sql, buffer, protocol.get());
 
       if (options->useServerPrepStmts && shouldPrepareOnServer(sql))
       {
@@ -551,8 +552,7 @@ namespace mariadb
         
       }
       if (!wrongFormat) {
-        native= Utils::nativeSql(sql, protocol.get());
-        query= &native;
+        query= &Utils::nativeSql(sql, native, protocol.get());
         firstUsefulChar= Utils::skipCommentsAndBlanks(StringImp::get(native));
       }
     }
@@ -704,7 +704,8 @@ namespace mariadb
 
   SQLString MariaDbConnection::nativeSQL(const SQLString& sql)
   {
-    return Utils::nativeSql(sql, protocol.get());
+    SQLString buffer;
+    return Utils::nativeSql(sql, buffer, protocol.get());
   }
 
   /**
@@ -735,7 +736,7 @@ namespace mariadb
     if (stmt)
     {
       stateFlag|= ConnectionState::STATE_AUTOCOMMIT;
-      stmt->executeUpdate(SQLString("set autocommit=").append((autoCommit) ? '1' : '0'));
+      stmt->executeUpdate(SQLString("SET AUTOCOMMIT=").append((autoCommit) ? '1' : '0'));
     }
   }
 
@@ -1727,7 +1728,7 @@ namespace mariadb
       throw SQLException("The catalog name may not be empty", "XAE05");
     }
     try {
-      stateFlag |= ConnectionState::STATE_DATABASE;
+      stateFlag|= ConnectionState::STATE_DATABASE;
       protocol->setCatalog(schema);
     }
     catch (SQLException &e) {

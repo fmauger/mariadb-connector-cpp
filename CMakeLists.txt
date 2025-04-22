@@ -1,5 +1,5 @@
 # ************************************************************************************
-#   Copyright (C) 2013,2023 MariaDB Corporation AB
+#   Copyright (C) 2013,2025 MariaDB Corporation plc
 #
 #   This library is free software; you can redistribute it and/or
 #   modify it under the terms of the GNU Library General Public
@@ -26,7 +26,7 @@ ENDIF()
 CMAKE_POLICY(SET CMP0048 NEW)
 
 PROJECT(mariadb_connector_cpp
-        VERSION 1.1.6
+        VERSION 1.1.7
 #        DESCRIPTION "MariaDB Connector/C++"
         LANGUAGES CXX C)
 
@@ -35,7 +35,7 @@ IF(CMAKE_COMPILER_IS_GNUCC AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 4.8)
 ENDIF()
 
 SET(MACPP_VERSION_QUALITY "ga") #Empty also means GA
-SET(MACPP_VERSION "1.01.0006")
+SET(MACPP_VERSION "1.01.0007")
 SET(MARIADB_DEFAULT_PLUGINS_SUBDIR "plugin")
 
 # For C/C
@@ -709,6 +709,7 @@ IF(USE_UNIX_SPECIAL_LIBMARIADBCONC)
   # ENDIF()
 ENDIF()
 
+
 # MINGW Specific includes and linking
 IF(MINGW)
   
@@ -802,7 +803,9 @@ IF(WITH_UNIT_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/CMakeLists.txt")
     COMMAND ${CMAKE_COMMAND} ARGS -E copy $<TARGET_FILE:${LIBRARY_NAME}> test)
   IF(NOT MINGW AND NOT USE_SYSTEM_INSTALLED_LIB)
     ADD_CUSTOM_COMMAND(TARGET ${LIBRARY_NAME} POST_BUILD
-      COMMAND ${CMAKE_COMMAND} ARGS -E copy $<TARGET_FILE:libmariadb> test)
+	  COMMAND ${CMAKE_COMMAND} ARGS -E copy $<TARGET_FILE:libmariadb> test
+	  COMMAND ${CMAKE_COMMAND} ARGS -E copy $<TARGET_FILE:caching_sha2_password> test
+    )
   ENDIF()
 ENDIF()
 

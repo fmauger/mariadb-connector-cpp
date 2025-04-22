@@ -1,6 +1,6 @@
 /*
  * Copyright (c) 2009, 2018, Oracle and/or its affiliates. All rights reserved.
- *               2020, 2024 MariaDB Corporation plc
+ *               2020, 2025 MariaDB Corporation plc
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License, version 2.0, as
@@ -45,14 +45,6 @@ namespace classes
 {
 void preparedstatement::setUp()
 {
-  sql::SQLString sspsOptionValue;
-  sql::Properties::iterator useServerPrepStmts= commonProperties.find("useServerPrepStmts");
-  bool hadOption= useServerPrepStmts != commonProperties.end();
-
-  if (hadOption) {
-    sspsOptionValue= useServerPrepStmts->second;
-  }
-
   commonProperties["useServerPrepStmts"]= "false";
   super::setUp();
 
@@ -65,7 +57,7 @@ void preparedstatement::setUp()
   }
   catch (sql::SQLException& sqle)
   {
-    logErr(String("Couldn't get connection") + sqle.what());
+    logErr(String("Couldn't get connection: ") + sqle.what());
     throw sqle;
   }
 
@@ -533,7 +525,6 @@ void preparedstatement::assortedSetType()
 
   try
   {
-
     for (it=columns.end(), it--; it != columns.begin(); it--)
     {
       stmt->execute("DROP TABLE IF EXISTS test");
@@ -575,7 +566,6 @@ void preparedstatement::assortedSetType()
         ASSERT_EQUALS(1, pstmt->executeUpdate());
       }
       
-
       pstmt->clearParameters();
       try
       {
@@ -617,9 +607,25 @@ void preparedstatement::assortedSetType()
       }
 
       pstmt->clearParameters();
-      // enum won't accept 0 as a value
+      // enum won't accept 0 as a value. Same for TIMESTAMP on MySQL
       pstmt->setBoolean(1, it->name.compare("ENUM") == 0);
-      ASSERT_EQUALS(1, pstmt->executeUpdate());
+      try
+      {
+        ASSERT_EQUALS(1, pstmt->executeUpdate());
+      }
+      catch (sql::SQLException& e)
+      {
+        if (isMySQL() && (it->name.compare("TIMESTAMP") == 0 ||
+                          it->name.compare("DATETIME") == 0  ||
+                          it->name.compare("DATE") == 0))
+        {
+          ASSERT_EQUALS("22007", e.getSQLState());
+        }
+        else
+        {
+          TEST_THROW(sql::SQLException, e);
+        }
+      }
 
       pstmt->clearParameters();
       try
@@ -1843,9 +1849,15 @@ void preparedstatement::executeQuery()
 
 void preparedstatement::addBatch()
 {
-  stmt->executeUpdate("DROP TABLE IF EXISTS testAddBatchPs");
-  stmt->executeUpdate("CREATE TABLE testAddBatchPs "
-    "(id int not NULL)");
+  sql::ConnectOptionsMap connection_properties{{"userName", user},
+                                               {"password", passwd},
+                                               {"useBulkStmts", "false"},
+                                               {"useTls", useTls ? "true" : "false"}};
+
+  con.reset(driver->connect(url, connection_properties));
+  stmt.reset(con->createStatement());
+
+  createSchemaObject("TABLE", "testAddBatchPs", "(id int not NULL)");
 
   pstmt.reset(con->prepareStatement("INSERT INTO testAddBatchPs VALUES(?)"));
   pstmt->setInt(1, 1);
@@ -1855,8 +1867,10 @@ void preparedstatement::addBatch()
   pstmt->setInt(1, 3);
   pstmt->addBatch();
 
-  const sql::Ints& batchRes = pstmt->executeBatch();
-
+  const sql::Ints& batchRes= pstmt->executeBatch();
+  // Checking results in other connection since connector may turn autocommit off and we have to be sure
+  // that it still commits the batch
+  stmt.reset(sspsCon->createStatement());
   res.reset(stmt->executeQuery("SELECT MIN(id), MAX(id), SUM(id), count(*) FROM testAddBatchPs"));
 
   ASSERT(res->next());
@@ -1897,8 +1911,6 @@ void preparedstatement::addBatch()
   ASSERT_EQUALS(1LL, batchLRes[0]);
   ASSERT_EQUALS(1LL, batchLRes[1]);
   ASSERT_EQUALS(1LL, batchLRes[2]);
-
-  stmt->executeUpdate("DROP TABLE testAddBatchPs");
 }
 
 
@@ -1996,10 +2008,16 @@ void preparedstatement::bugConcpp96()
  */
 void preparedstatement::concpp99_batchRewrite()
 {
-  sql::ConnectOptionsMap connection_properties{{"userName", user}, {"password", passwd}, {"rewriteBatchedStatements", "true"}, {"useTls", useTls ? "true" : "false"}};
+  sql::ConnectOptionsMap connection_properties{
+    {"userName", user},
+    {"password", passwd},
+    {"useBulkStmts", "false"},
+    {"rewriteBatchedStatements", "true"},
+    {"useTls", useTls ? "true" : "false"}};
 
   con.reset(driver->connect(url, connection_properties));
-  stmt.reset(con->createStatement());
+  // Reading results must be on the different connection to ensure that the driver commits the batch
+  stmt.reset(sspsCon->createStatement());
   createSchemaObject("TABLE", "concpp99_batchRewrite", "(id int not NULL PRIMARY KEY, val VARCHAR(31) NOT NULL DEFAULT '')");
 
   const sql::SQLString insertQuery[]{"INSERT INTO concpp99_batchRewrite VALUES(?,?)",
@@ -2011,15 +2029,11 @@ void preparedstatement::concpp99_batchRewrite()
 
   for (std::size_t i= 0; i < sizeof(insertQuery) / sizeof(insertQuery[0]); ++i) {
     pstmt.reset(con->prepareStatement(insertQuery[i]));
-    //ssps.reset(sspsCon->prepareStatement(insertQuery[i]));
 
     for (size_t row = 0; row < sizeof(id) / sizeof(id[0]); ++row) {
       pstmt->setInt(1, id[row]);
       pstmt->setString(2, val[i][row]);
       pstmt->addBatch();
-      /*ssps->setInt(1, id[row]);
-      ssps->setString(2, val[0][row]);
-      ssps->addBatch();*/
     }
 
     const sql::Ints& batchRes = pstmt->executeBatch();
@@ -2037,7 +2051,6 @@ void preparedstatement::concpp99_batchRewrite()
     ASSERT(!res->next());
     ////// The same, but for executeLargeBatch
     stmt->executeUpdate(deleteQuery);
-    //const sql::Ints& batchRes2= ssps->executeBatch();
 
     pstmt->clearBatch();
     pstmt->clearParameters();
@@ -2078,7 +2091,8 @@ void preparedstatement::concpp106_batchBulk()
     {"useBulkStmts", "true"}, {"useTls", useTls ? "true" : nullptr} };
 
   con.reset(driver->connect(url, connection_properties));
-  stmt.reset(con->createStatement());
+  // Reading results must be on the different connection to ensure that the driver commits the batch
+  stmt.reset(sspsCon->createStatement());
   createSchemaObject("TABLE", "concpp106_batchBulk", "(id int not NULL PRIMARY KEY, val VARCHAR(31))");
 
   const sql::SQLString insertQuery[]{ "INSERT INTO concpp106_batchBulk VALUES(?,?)",
@@ -2121,8 +2135,9 @@ void preparedstatement::concpp106_batchBulk()
       else {
         ASSERT_EQUALS(val_expected[i][row], res->getString(2));
       }
-      // With rewriteBatchedStatements we don't have separate results for each parameters set - only SUCCESS_NO_INFO
-      ASSERT_EQUALS(batchResult[i], batchRes[row]);
+      // With bulk we don't have separate results for each parameters set - only SUCCESS_NO_INFO.
+      // Unless with mysql where it is not supported
+      ASSERT_EQUALS(isMySQL() ? 1 : batchResult[i], batchRes[row]);
     }
     ASSERT(!res->next());
     ////// The same, but for executeLargeBatch
@@ -2159,7 +2174,7 @@ void preparedstatement::concpp106_batchBulk()
         ASSERT_EQUALS(val_expected[i][row], res->getString(2));
       }
       // With rewriteBatchedStatements we don't have separate results for each parameters set - only SUCCESS_NO_INFO
-      ASSERT_EQUALS(static_cast<int64_t>(batchResult[i]), batchLRes[row]);
+      ASSERT_EQUALS(isMySQL() ? 1LL : static_cast<int64_t>(batchResult[i]), batchLRes[row]);
     }
     ASSERT(!res->next());
     stmt->executeUpdate(deleteQuery);
@@ -2275,7 +2290,7 @@ void preparedstatement::concpp116_getByte()
 }
 
 /* CONCPP - 133 */
-void preparedstatement::multirs_caching()
+void preparedstatement::multirsCaching()
 {
   createSchemaObject("PROCEDURE", "ccpptest_multirs_caching", "()\
                         BEGIN\
@@ -2323,5 +2338,64 @@ void preparedstatement::multirs_caching()
   ASSERT_EQUALS(-1, pstmt1->getUpdateCount());
 }
 
+
+void preparedstatement::moreResultsAfterPrepare()
+{
+  pstmt.reset(con->prepareStatement("SELECT 1"));
+  ASSERT(!pstmt->getMoreResults());
+  ASSERT_EQUALS(-1, pstmt->getUpdateCount());
+
+  ssps.reset(con->prepareStatement("SELECT 1"));
+  ASSERT(!ssps->getMoreResults());
+  ASSERT_EQUALS(-1, ssps->getUpdateCount());
+}
+
+/* if sql::bytes wrapped C array, setBytes would crash the application */
+void preparedstatement::bytesArrParam()
+{
+  pstmt.reset(con->prepareStatement("SELECT ?"));
+  char charArray[3]= {'\1', '\0', '\1'};
+  sql::bytes sqlBytes(charArray, 3), b2{'\1', '\0', '\2'};
+  b2[2]= '\0';
+  // sqlBytes has internally a negative length, i.e. it does not own the array. let's see if it throws
+  pstmt->setBytes(1, &sqlBytes);
+  res.reset(pstmt->executeQuery());
+  ASSERT(res->next());
+  ASSERT_EQUALS(65537, res->getInt(1));
+  
+  // b2 owns the array and internal length is positive - checking it's also alright
+  pstmt->setBytes(1, &b2);
+  res.reset(pstmt->executeQuery());
+  ASSERT(res->next());
+  ASSERT_EQUALS(65536, res->getInt(1));
+
+  sqlBytes[0]= '\0';
+  // Just to show, that original array has been changed
+  ASSERT_EQUALS('\0', charArray[0]);
+  pstmt->setBytes(1, &sqlBytes);
+  res.reset(pstmt->executeQuery());
+  ASSERT(res->next());
+  ASSERT_EQUALS(1, res->getInt(1));
+}
+
+/* CONCPP-138 application crashes if binary resultset used after closing the connection */
+void preparedstatement::concpp138_useRsAfterConClose()
+{
+  pstmt.reset(sspsCon->prepareStatement("SELECT 1275, 'Just some text', 1.25"));
+  ssps.reset(sspsCon->prepareStatement("SELECT 55555"));
+
+  ResultSet rs(pstmt->executeQuery());
+  res.reset(ssps->executeQuery());
+  sspsCon->close();
+  ASSERT(res->next());
+  ASSERT_EQUALS(55555, res->getInt(1));
+  ASSERT(rs->next());
+  ASSERT_EQUALS(1275, rs->getInt(1));
+  ASSERT_EQUALS("Just some text", rs->getString(2));
+  ASSERT_EQUALS_EPSILON(1.25, rs->getDouble(3), 0.0001);
+  ASSERT(!res->next());
+  ASSERT(!rs->next());
+  sspsCon.reset();
+}
 } /* namespace preparedstatement */
 } /* namespace testsuite */
