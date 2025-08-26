@@ -7,7 +7,7 @@
 #
 
 prefix=@CMAKE_INSTALL_PREFIX@
-includedir=${prefix}/@INSTALL_INCLUDEDIR@
+includedir=${prefix}/@INSTALL_INCLUDEDIR@/..
 libdir=${prefix}/@INSTALL_LIBDIR@/@SUFFIX_INSTALL_DIR@
 
 Name: libmariadbcpp

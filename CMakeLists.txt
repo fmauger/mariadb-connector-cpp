@@ -459,6 +459,7 @@ ENDIF()
 ### Setting installation paths - should go before C/C subproject sets its own. We need to have control over those
 INCLUDE("install")
 MESSAGE(STATUS "Libraries installation dir: ${INSTALL_LIBDIR}")
+MESSAGE(STATUS "Headers installation dir: ${INSTALL_INCLUDEDIR}")
 MESSAGE(STATUS "Authentication Plugins installation dir: ${INSTALL_PLUGINDIR}")
 
 IF(NOT MINGW AND WIN32)
