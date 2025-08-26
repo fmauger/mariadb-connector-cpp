@@ -37,7 +37,9 @@ class MariaDbDataSourceInternal;
 class MARIADB_EXPORTED MariaDbDataSource {
   /* Hiding class properties to accomodate there possible enhancement, expecting that the rest of properties is stable set of them*/
   std::unique_ptr<MariaDbDataSourceInternal> internal;
+#ifdef _MSC_VER
 #pragma warning(pop)
+#endif
 
 public:
   MariaDbDataSource(const SQLString& url);

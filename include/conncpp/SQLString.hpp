@@ -113,5 +113,7 @@ inline bool operator!=(const std::string& str1, const SQLString& str2) { return 
 
 MARIADB_EXPORTED std::ostream& operator<<(std::ostream& stream, const SQLString& str);
 }
+#ifdef _MSC_VER
 #pragma warning(pop)
+#endif
 #endif
