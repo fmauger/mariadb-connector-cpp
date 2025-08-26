@@ -29,8 +29,10 @@ namespace mariadb
 {
 class MariaDbDataSourceInternal;
 
+#ifdef _MSC_VER
 #pragma warning(push)
 #pragma warning(disable:4251)
+#endif
 
 class MARIADB_EXPORTED MariaDbDataSource {
   /* Hiding class properties to accomodate there possible enhancement, expecting that the rest of properties is stable set of them*/

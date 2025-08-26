@@ -30,9 +30,11 @@ namespace sql
 {
 class StringImp;
 
-#pragma warning(push)
+#ifdef _MSC_VER
+#prgma warning(push)
 #pragma warning(disable:4251)
-
+#endif
+  
 class SQLString final {
 
   friend class StringImp;

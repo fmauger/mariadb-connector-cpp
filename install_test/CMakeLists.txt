@@ -17,7 +17,7 @@
 #   51 Franklin St., Fifth Floor, Boston, MA 02110, USA
 # *************************************************************************************/
 
-cmake_minimum_required(VERSION 3.10)
+cmake_minimum_required(VERSION 3.1)
 
 PROJECT(mariadbcpp-example
         LANGUAGES CXX)
@@ -29,14 +29,14 @@ ELSE()
 
   SET(LIBRARY_NAME "libmariadbcpp.so")
 
-  EXECUTE_PROCESS(COMMAND tar zxf /opt/SW/MariaDB/mariadb_conn_cpp/_build.d/mariadb-connector-cpp-1.1.7-linux-x86_64.tar.gz)
+  EXECUTE_PROCESS(COMMAND tar zxf /home/mauger/Private/Software/MariaDB/mariadb-connector-cpp.git/_build.d/mariadb-connector-cpp-1.1.8-linux-x86_64.tar.gz)
   ADD_CUSTOM_TARGET(LIST_CONTENTS
-      COMMAND ls -lR ${CMAKE_BINARY_DIR}/mariadb-connector-cpp-1.1.7-linux-x86_64/lib/mariadb/*.so* ${CMAKE_BINARY_DIR}/mariadb-connector-cpp-1.1.7-linux-x86_64/)
+      COMMAND ls -lR ${CMAKE_BINARY_DIR}/mariadb-connector-cpp-1.1.8-linux-x86_64/lib/mariadb/*.so* ${CMAKE_BINARY_DIR}/mariadb-connector-cpp-1.1.8-linux-x86_64/)
 
   FILE(GLOB LIBS_IN_PACK
-       ${CMAKE_BINARY_DIR}/mariadb-connector-cpp-1.1.7-linux-x86_64/lib/mariadb/lib*.so*)
-  MESSAGE(STATUS "Configuring to search for headers in the ${CMAKE_BINARY_DIR}/mariadb-connector-cpp-1.1.7-linux-x86_64/include")
-  INCLUDE_DIRECTORIES("${CMAKE_BINARY_DIR}/mariadb-connector-cpp-1.1.7-linux-x86_64/include")
+       ${CMAKE_BINARY_DIR}/mariadb-connector-cpp-1.1.8-linux-x86_64/lib/mariadb/lib*.so*)
+  MESSAGE(STATUS "Configuring to search for headers in the ${CMAKE_BINARY_DIR}/mariadb-connector-cpp-1.1.8-linux-x86_64/include")
+  INCLUDE_DIRECTORIES("${CMAKE_BINARY_DIR}/mariadb-connector-cpp-1.1.8-linux-x86_64/include")
   ADD_EXECUTABLE(example example.cpp)
 
   MESSAGE(STATUS "Configuring to link against libs in the package ${LIBS_IN_PACK}")
